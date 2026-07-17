@@ -24,6 +24,41 @@ test('Import SVG line', function() {
     equals(imported, path);
 });
 
+test('Import SVG does not execute embedded scripts (#2100)', function(assert) {
+    // https://github.com/paperjs/paper.js/issues/2100 — importing untrusted
+    // SVG markup must not run attacker-controlled JavaScript. The disclosed
+    // PoC hides an `<img onerror>` inside a `<foreignObject>`; importNode()
+    // briefly attaches the parsed tree to document.body (#1242), which was
+    // enough for the browser to fire the handler. The fix strips <script>,
+    // <foreignObject> and inline event handlers from string-parsed SVG.
+    var done = assert.async();
+    var scope = typeof window !== 'undefined' ? window
+            : typeof global !== 'undefined' ? global : this;
+    scope.__paperXssExecuted = false;
+    var evilSVG = [
+        '<svg version="1.1" xmlns="http://www.w3.org/2000/svg"',
+        ' xmlns:xlink="http://www.w3.org/1999/xlink">',
+        '<foreignObject x="1" y="1" width="1" height="1">',
+        '<img xmlns="http://www.w3.org/1999/xhtml"',
+        ' src="data:image/png;base64,invalid"',
+        ' onerror="window.__paperXssExecuted = true" />',
+        '</foreignObject>',
+        '<rect x="0" y="0" width="10" height="10"',
+        ' onload="window.__paperXssExecuted = true" />',
+        '</svg>'
+    ].join('');
+    // Must not throw, and must still import the benign geometry alongside it.
+    var imported = paper.project.importSVG(evilSVG);
+    ok(imported, 'importSVG still returns an item for sanitized markup');
+    // Wait a tick: a surviving <img onerror> (the vulnerable path) fires
+    // asynchronously after its load fails, so assert on the next turn.
+    setTimeout(function() {
+        equals(scope.__paperXssExecuted, false,
+            'no embedded event handler executed during import');
+        done();
+    }, 100);
+});
+
 test('Import SVG rect', function() {
     var attrs = {
         x: 25,

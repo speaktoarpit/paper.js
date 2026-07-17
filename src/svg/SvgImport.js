@@ -651,6 +651,46 @@ new function() {
         return item;
     }
 
+    // Strip active content from SVG markup that Paper.js parsed from an
+    // untrusted string, closing the importSVG XSS (paperjs/paper.js#2100).
+    // importNode() briefly attaches the parsed tree to document.body so
+    // imported items inherit document styles (#1242); for <script>,
+    // <foreignObject> and inline event-handler attributes that attachment is
+    // enough for the browser to execute attacker-controlled JavaScript (e.g.
+    // an <img onerror> inside a <foreignObject>). Paper.js renders none of
+    // this content — it carries no vector geometry — so removing it changes no
+    // valid import while eliminating the attack surface. Only markup Paper.js
+    // parsed itself is sanitized; a DOM node passed to importSVG() directly is
+    // treated as caller-owned, already-trusted content and left untouched.
+    function sanitizeSvg(node) {
+        if (!node || !node.querySelectorAll)
+            return node;
+        // 1. Drop elements that can run scripts or embed foreign (HTML) markup.
+        var unsafe = node.querySelectorAll('script, foreignObject');
+        for (var i = 0, l = unsafe.length; i < l; i++) {
+            var element = unsafe[i];
+            if (element.parentNode)
+                element.parentNode.removeChild(element);
+        }
+        // 2. Strip inline event handlers (onload / onerror / ...) and
+        //    javascript: URLs from every surviving element.
+        var elements = node.querySelectorAll('*');
+        for (var j = 0, m = elements.length; j < m; j++) {
+            var attributes = elements[j].attributes;
+            // Iterate backwards since removeAttribute() mutates the list.
+            for (var k = attributes.length - 1; k >= 0; k--) {
+                var name = attributes[k].name,
+                    lower = name.toLowerCase(),
+                    value = (attributes[k].value || '')
+                        .replace(/[\s\x00-\x20]+/g, '').toLowerCase();
+                if (/^on/.test(lower) || (/(?:^|:)href$/.test(lower)
+                        && /^javascript:/.test(value)))
+                    elements[j].removeAttribute(name);
+            }
+        }
+        return node;
+    }
+
     function importSVG(source, options, owner) {
         if (!source)
             return null;
@@ -664,10 +704,10 @@ new function() {
             try {
                 var node = typeof svg === 'object'
                     ? svg
-                    : new self.DOMParser().parseFromString(
+                    : sanitizeSvg(new self.DOMParser().parseFromString(
                         svg.trim(),
                         'image/svg+xml'
-                    );
+                    ));
                 if (!node.nodeName) {
                     node = null;
                     throw new Error('Unsupported SVG source: ' + source);
